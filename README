@@ -1,0 +1,374 @@
+# BétonLab - Essais de compression et probabilités
+
+Version 1.0 - 22 octobre 2026
+
+Application pédagogique Python/Streamlit pour saisir des résistances à la
+compression du béton, les conserver en PostgreSQL et explorer leur variabilité.
+Elle s'ouvre directement, sans page de connexion. Les résultats ne constituent
+ni un contrôle réglementaire de conformité ni une validation d'un ouvrage.
+
+## 1. Fichiers livrés
+
+- app.py : interface, HTML/CSS, calculs, schémas graphiques, accès PostgreSQL,
+  validation CSV et rapport PDF.
+- requirement.text : dépendances Python pour l'installation locale.
+- README : installation, fonctionnement, exemples et déploiement.
+
+Les tests, captures, archives et configurations privées sont hors de ce dossier.
+Ne pas ajouter les mots de passe, données réelles ou fichiers privés à GitHub.
+
+## 2. Installation Windows / VS Code
+
+Ouvrir le dossier betonlab avec VS Code, puis Terminal > Nouveau terminal.
+Python doit être installé et accessible avec la commande python.
+
+    python --version
+    python -m pip install -r requirement.text
+    python -m streamlit run app.py
+
+L'application a été vérifiée sur cet ordinateur avec Python 3.14 et Streamlit
+1.65. Les dépendances sont bornées par versions majeures, sans figer toutes
+les dépendances indirectes : un nouvel environnement doit être revérifié.
+Sous Windows, si ZoneInfo indique que les fuseaux sont absents, installer :
+
+    python -m pip install tzdata
+
+Bibliothèques :
+
+| Bibliothèque | Rôle |
+| --- | --- |
+| streamlit | Interface, formulaires, navigation, téléchargements |
+| numpy | Calculs vectoriels et générateur aléatoire reproductible |
+| pandas | Tableaux, lecture et export CSV |
+| scipy | Lois, ajustements, quantiles, tests et intervalles binomiaux |
+| plotly | Graphiques interactifs |
+| psycopg[binary] | Connexion PostgreSQL chiffrée TLS et transactions |
+| reportlab | Création du rapport PDF |
+| tzdata (Windows) | Fuseau horaire pour le contrôle de la date |
+
+La bibliothèque standard fournit dates, identifiants, hachage et chiffrement
+Windows DPAPI via ctypes. Aucun service payant ou clé API n'est requis pour
+les calculs et les exemples. Le stockage en ligne dépend du service Neon.
+
+## 3. Base en ligne choisie : PostgreSQL sur Neon
+
+Un projet betonlab a été créé sur l'offre gratuite du compte Neon connecté.
+Identifiant non secret : weathered-recipe-87952598.
+Région : aws-eu-central-1 ; base : betonlab ; version PostgreSQL : 17.
+Les quotas et conditions de l'offre sont à vérifier dans la console Neon ;
+l'application ne garantit pas un hébergement gratuit illimité.
+
+- Branche main : base destinée à tes essais, initialement vide.
+- Branche verification-betonlab : vérifications avec données fictives,
+  distincte de main. Ne pas la choisir pour le déploiement de tes essais.
+- Table : public.betonlab_essais.
+- Rôle d'application betonlab_app : SELECT et INSERT uniquement.
+  Il ne peut ni modifier ni supprimer les essais existants.
+
+La connexion de cet utilisateur Windows est enregistrée CHIFFRÉE, hors projet :
+
+    C:\Users\FIFEN HOUSSEIN\Documents\Codex\private\betonlab.connection.dpapi
+
+Elle est déchiffrable par le même utilisateur Windows, pas par un autre
+ordinateur. Ne pas publier ce fichier. L'app le lit automatiquement sur
+cet ordinateur ; ce fichier n'est pas inclus dans l'archive livrée.
+
+Pour une autre installation, fournir une URL PostgreSQL TLS avec la variable
+d'environnement BETONLAB_DATABASE_URL, ou dans les secrets Streamlit.
+La variable DATABASE_URL est également reconnue. Une URL définie explicitement
+est prioritaire sur le fichier Windows. Sans connexion disponible, les
+exemples fonctionnent ; aucune donnée fictive n'est substituée à la base.
+Le mode Base en ligne signale une erreur sans afficher l'URL ou son mot de passe.
+Pour une toute nouvelle base, l'administrateur doit préalablement exécuter
+SCHEMA_SQL et INDEX_SQL (définis au début de app.py) dans son éditeur SQL,
+puis créer un rôle limité avec USAGE sur public et SELECT/INSERT sur la table.
+Ce travail est déjà fait pour le projet livré. L'app ne crée pas de schéma
+avec son compte restreint et ne reçoit pas le mot de passe administrateur.
+
+### Autorisation de saisie
+
+Sur cet ordinateur, la configuration Windows autorise la saisie locale.
+Le serveur local doit rester lié à 127.0.0.1, sauf choix volontaire de partage.
+Pour imposer cette restriction au lancement :
+
+    python -m streamlit run app.py --server.address 127.0.0.1
+
+Sur un hébergement sans cette configuration privée, la saisie est désactivée
+par défaut, mais les pages d'analyse restent accessibles.
+
+Deux options de configuration serveur :
+- BETONLAB_WRITE_TOKEN : clé d'édition longue à conserver secrète. Le champ
+  Clé d'édition apparaît dans la barre latérale ; il ne bloque pas l'ouverture
+  de l'application. Le visiteur ne peut enregistrer que s'il connaît la clé.
+- BETONLAB_ALLOW_WRITES = "true" : autorise la saisie à tous les visiteurs.
+  Réserver ce choix à un environnement maîtrisé, pas à un registre réel public.
+
+La clé n'est pas une authentification multi-utilisateur : pas de comptes,
+de droits par chantier, de journal d'auteur ou de limitation des tentatives.
+La consultation de tous les groupes reste possible pour les visiteurs de
+l'application. Ne pas y mettre de données personnelles ou confidentielles
+sur un hébergement ouvert. Aucun secret ne doit figurer dans app.py ou GitHub.
+
+## 4. Données et collecte
+
+Une ligne = une éprouvette. Plusieurs éprouvettes d'un même prélèvement peuvent
+être dépendantes : l'application ne prétend pas garantir leur indépendance.
+
+Champs CSV, avec en-têtes EXACTS :
+
+    reference,chantier,ouvrage,lot,date_essai,age_jours,forme,resistance_mpa
+    E-001,Chantier A,Poteau P1,Lot A,2026-01-15,28,Cylindre,30.5
+
+- Référence : 1 à 64 caractères, unique dans le groupe considéré.
+- Chantier / ouvrage / lot : 1 à 80 caractères, sans retour à la ligne.
+- Date : AAAA-MM-JJ, de 1900 à aujourd'hui (horloge Europe/Paris).
+- Age : entier de 1 à 3650 jours.
+- Forme : Cylindre ou Cube. Si colonne absente du CSV : Cylindre.
+- Résistance : 0,1 à 250 MPa, valeur finie. Ce sont des garde-fous de saisie,
+  pas des limites normatives. 1 MPa = 1 N/mm².
+
+CSV UTF-8, virgule ou point-virgule. Avec séparateur point-virgule, la virgule
+décimale est acceptée pour la résistance. Taille 5 Mo et 1000 essais par envoi.
+Les données sont prévisualisées et la destination doit être confirmée.
+Un doublon refuse tout le lot importé : aucun enregistrement partiel.
+Les références sont comparées sans distinction de casse pour l'identifiant.
+Les exports protègent les chaînes pouvant être interprétées comme formules
+par un tableur en préfixant une apostrophe. Cette apostrophe reste visible
+si on réimporte une telle chaîne ; vérifier les noms avant réimportation.
+
+Les analyses séparent strictement chantier, ouvrage, lot, âge et forme.
+Pas de conversion automatique cube/cylindre, ni de correction vers 28 jours.
+Un groupe supérieur à 20000 essais n'est pas analysé partiellement : affiner
+les lots. Aucun essai existant n'est corrigé ou supprimé depuis l'interface.
+
+## 5. Rubriques et fonctionnement
+
+### Tableau de bord
+Nombre d'éprouvettes, moyenne, dispersion et compte sous le seuil choisi.
+Courbe des résistances et tableau des derniers essais du groupe.
+Source PostgreSQL ou Exemple fictif clairement indiquée.
+
+### Collecte
+Formulaire manuel et import CSV. Le bouton Modèle CSV fictif télécharge un
+exemple, sans l'enregistrer automatiquement. En mode fictif, les ajouts restent
+en session et disparaissent à sa fermeture ou au rechargement du jeu fictif.
+
+### Analyse
+Moyenne, écart-type échantillon (dénominateur n-1), coefficient de variation,
+fractile empirique 5 % par interpolation linéaire. Comptage strict R < seuil.
+Normale ajustée par maximum de vraisemblance : sigma utilise n, pas n-1.
+Weibull à deux paramètres, origine fixée à zéro, proposée dès 5 valeurs.
+Le fractile ajusté 5 %, noté estimation pédagogique de f_ck, ne constitue pas
+une résistance caractéristique certifiée ni un critère normatif d'acceptation.
+
+Histogramme/densités, fonctions de répartition, AIC, probabilité R < seuil.
+Shapiro-Wilk pour 3 à 5000 essais. Le test Weibull Anderson-Darling est lancé
+explicitement, avec 199 rééchantillonnages et réestimation des paramètres,
+pour 5 à 500 essais. Sa p-valeur est approximative et assez grossière.
+Un test non significatif ne prouve pas la loi. L'AIC ne compare que les modèles
+proposés. Une série constante ou un essai unique ne permet pas l'ajustement.
+La normale peut attribuer une masse à R < 0 : ce défaut n'est pas masqué.
+
+### Bayes
+Modèle normal-normal, dispersion des essais sigma supposée connue et choisie
+par l'utilisateur. L'incertitude tau0 porte sur la MOYENNE, pas sur les essais.
+La seule valeur prévue de formulation ne détermine ni tau0 ni sigma.
+
+    variance_posterieure = 1 / (1/tau0² + n/sigma²)
+    moyenne_posterieure = variance_posterieure * (mu0/tau0² + somme(x)/sigma²)
+    variance_predictive = sigma² + variance_posterieure
+
+L'intervalle crédible 95 % concerne la moyenne. La probabilité prédictive
+concerne une nouvelle éprouvette : ces deux incertitudes sont différentes.
+Après modification du formulaire, valider à nouveau. Après changement de
+groupe ou de seuil, les résultats incompatibles sont masqués.
+
+### Carte de contrôle
+Carte individuelle avec limites issues des étendues mobiles de la référence :
+
+    sigma_procede = moyenne(abs(x[i] - x[i-1])) / 1,128
+    limites = moyenne_reference +/- 3 * sigma_procede
+
+Au moins 10 valeurs de référence et une de surveillance. Référence réglable
+jusqu'à 50 premiers essais. Un signal n'est ni une preuve d'essai erroné ni
+une non-conformité. Limites non estimables si la référence ne varie pas.
+Tri par date puis référence ; sans heure d'essai, ce tri n'est pas forcément
+l'ordre réel. Il s'agit d'une exploration rétrospective. Une utilisation
+opérationnelle demande une référence stable et une chronologie fiable.
+
+### Fiabilité
+Simulation de R < S avec R normale ou Weibull ajustée, S normale ou lognormale.
+R et S indépendantes, toutes deux en MPa. Surface constante si conversion :
+
+    S(MPa) = 1000 * F(kN) / A(mm²)
+    Pf = nombre(R < S) / nombre_de_tirages
+    beta = -Phi_inverse(Pf)
+
+De 1000 à 100000 tirages, graine réglable. IC binomial exact à 95 % : il mesure
+seulement l'erreur Monte-Carlo conditionnelle aux lois retenues, pas l'erreur
+d'estimation de leurs paramètres. Zéro dépassement ne signifie pas Pf nulle
+avec certitude ; beta n'est pas affiché comme une sécurité infinie.
+Une référence analytique est calculée pour les normales indépendantes ou S
+déterministe. La normale pour S peut produire des tractions S < 0 : signalées
+si leur probabilité dépasse 0,1 %, sans troncature silencieuse.
+La résistance d'une éprouvette n'est pas directement la capacité portante
+d'un élément. Pf n'est pas ici une probabilité certifiée d'effondrement.
+
+### Données et tests
+Export CSV du groupe et des tirages Monte-Carlo dans leur rubrique.
+Rapport PDF des statistiques et modèles univariés du groupe sélectionné.
+Ce PDF n'inclut pas les formulaires Bayes/fiabilité ni le détail de tous les
+essais : utiliser le CSV pour les données brutes. Aucun export Excel natif.
+
+## 6. Parcours de test sans données réelles
+
+1. Ouvrir l'app. Base en ligne ne doit pas afficher les essais de démonstration.
+2. Cliquer Explorer les 24 essais fictifs depuis le tableau de bord, ou ouvrir
+   Exemples fictifs dans la barre latérale et confirmer le remplacement en session.
+3. Seuil 25 MPa : n=24 ; moyenne=30,5 MPa ; fractile empirique 5 %=28 MPa.
+   Ecart-type échantillon = racine(180/23) = environ 2,7975 MPa.
+4. Analyse : histogramme, normale/Weibull et répartition doivent apparaître.
+   Le dernier essai de 42 MPa influence fortement la queue supérieure.
+5. Carte de contrôle : référence=20 ; centre=30 MPa ; MR moyen=28/19 MPa ;
+   limite haute environ 33,92 MPa. Le dernier essai à 42 MPa est le seul signal
+   de surveillance dans cet exemple. Ce n'est pas un verdict de conformité.
+6. Charger le Petit calcul à 6 essais (remplace seulement le jeu en session).
+   Valeurs : 25,27,29,31,33,35 MPa. Moyenne=30 ; écart-type=racine(14)=3,741657 ;
+   CV=12,4722 % ; fractile empirique 5 %=25,5 MPa ; aucun essai strictement <25.
+   Sigma normal MLE=racine(70/6)=3,415650 ; fractile normal 5 % environ 24,38.
+7. Bayes sur ces six essais : mu0=30, tau0=4, sigma=5 MPa ; moyenne mise à
+   jour=30 MPa ; écart-type de la moyenne=20/11=1,818182 MPa ; IC crédible 95 %
+   environ [26,44 ; 33,56] MPa. L'écart-type du prochain essai reste environ 5,32.
+8. Fiabilité : R normale ajustée aux six essais, S normale, moyenne=20 MPa,
+   écart-type=3 MPa, 100000 tirages, graine42. Référence analytique :
+   Phi(-10/racine(70/6+9)), environ 1,39 %. La simulation doit être proche,
+   pas exactement égale. Le résultat analytique est affiché par l'app.
+   Passer en force/surface avec 400 kN et 20000 mm² donne la même moyenne20MPa.
+9. Collecte en MODE FICTIF : référence NOUVEAU-01, date valide, résistance32MPa,
+   groupe fictif courant. Ajouter : nombre +1. Refaire la même référence :
+   refus sans ajout. Nom vide ou résistance hors bornes : refus.
+10. Télécharger le modèle CSV fictif et prévisualiser son import en mode fictif.
+    Si les six références existent déjà, tout l'import est refusé. Pour tester
+    un ajout, changer leurs références dans le CSV. Confirmer la destination.
+11. Données et tests : exporter CSV, préparer PDF et vérifier le seuil/source.
+12. Revenir à Base en ligne : aucun de ces ajouts fictifs n'y apparaît.
+    Un véritable essai saisi dans ce mode sera persistant. Ne pas employer
+    la base principale pour les tests fictifs si tu veux la garder vide.
+
+## 7. Publication GitHub depuis VS Code
+
+Créer un dépôt vide betonlab dans ton compte GitHub (sans README ajouté
+automatiquement si tu publies le dossier local). Dans le terminal du dossier :
+
+    git init
+    git add app.py requirement.text README
+    git commit -m "Premiere version de BetonLab"
+    git branch -M main
+    git remote add origin https://github.com/gc7258728-cmyk/betonlab.git
+    git remote -v
+    git push -u origin main
+
+Le dépôt betonlab est un NOM PROPOSÉ : il n'a pas été créé automatiquement.
+Si origin existe déjà, vérifier sa cible, puis au besoin :
+
+    git remote set-url origin https://github.com/gc7258728-cmyk/betonlab.git
+
+Ne pas remplacer le remote d'une autre application. Ne pas committer le
+fichier DPAPI, les variables, les secrets Streamlit ou les essais réels.
+
+## 8. Streamlit Community Cloud
+
+Community Cloud ne reconnaît PAS requirement.text comme manifeste pip
+standard. Le dossier livré conserve les trois noms demandés. Préparer une
+copie distincte pour le déploiement et y RENOMMER uniquement le manifeste :
+
+    New-Item -ItemType Directory -Path ..\betonlab-deploiement
+    Copy-Item app.py ..\betonlab-deploiement\app.py
+    Copy-Item README ..\betonlab-deploiement\README
+    Copy-Item requirement.text ..\betonlab-deploiement\requirements.txt
+
+Dans cette copie, remplacer les instructions d'installation README par
+python -m pip install -r requirements.txt. Publier ensuite cette copie
+comme dépôt de déploiement (ou téléverser ses trois fichiers dans le dépôt
+choisi et supprimer l'ancien manifeste mal nommé dans CE dépôt seulement).
+Résultat sur GitHub : app.py + requirements.txt + README.
+
+Sur share.streamlit.io : Create app, sélectionner le dépôt, branche main,
+fichier app.py. Avec Paste URL, fournir une URL de FICHIER, par exemple :
+
+    https://github.com/gc7258728-cmyk/betonlab/blob/main/app.py
+
+Ce lien n'est valable qu'après création/publication du dépôt correspondant.
+Dans Advanced settings / Secrets, ajouter la connexion de la branche main :
+
+    BETONLAB_DATABASE_URL = "URL_POSTGRESQL_PRIVEE"
+    BETONLAB_WRITE_TOKEN = "CLE_EDITION_LONGUE_PRIVEE"
+
+Il s'agit de valeurs à remplacer, pas d'identifiants fournis dans le code.
+La saisie restera verrouillée tant que la clé d'édition n'est pas renseignée
+dans la barre latérale. Ne pas ajouter BETONLAB_ALLOW_WRITES=true sur une
+app publique si tu ne souhaites pas ouvrir l'enregistrement à tous.
+
+Pour transférer la connexion locale chiffrée vers Secrets SANS l'afficher
+dans le terminal, depuis le dossier betonlab sur CE compte Windows :
+
+    python -B -c "import app,subprocess; c=app.local_config(); assert c.get('dsn'), 'Connexion absente'; subprocess.run(['clip.exe'],input=c['dsn'],text=True,check=True)"
+
+Le presse-papiers contient alors une donnée secrète : coller seulement dans
+Secrets de ton application, jamais dans le code ni dans ce chat. Effacer le
+presse-papiers après utilisation (Set-Clipboard -Value '') et son historique
+Windows s'il est activé. La configuration DPAPI n'est pas portable.
+Neon Console permet aussi de gérer/réinitialiser les identifiants ; utiliser
+un rôle limité SELECT/INSERT comme betonlab_app plutôt que le propriétaire.
+
+Déployer puis vérifier les logs, l'accès PostgreSQL, les graphiques et un
+export. Le déploiement public n'a pas été effectué pendant cette livraison.
+En cas de ModuleNotFoundError : vérifier le nom requirements.txt sur la
+bonne branche, son contenu et les logs d'installation, pas seulement Reboot.
+
+## 9. Mettre à jour après modification
+
+Tester d'abord localement, puis publier dans le dépôt réellement déployé :
+
+    git status
+    git add app.py requirements.txt README
+    git commit -m "Amelioration de BetonLab"
+    git push
+
+Dans le dossier local original à trois fichiers, utiliser requirement.text
+à la place de requirements.txt. Reporter les changements du manifeste vers
+la copie de déploiement avant l'envoi. Ne pas publier de doublon app(1).py.
+Community Cloud récupère les nouveaux commits de la branche configurée.
+Consulter Manage app / logs si la mise à jour échoue.
+
+Architecture : VS Code -> Git -> GitHub -> Streamlit Cloud -> URL publique.
+L'app Streamlit communique séparément avec PostgreSQL/Neon par TLS.
+
+## 10. Vérifications et limites
+
+Vérifications automatisées initiales : 36 tests de calculs, validation,
+CSV, PDF et navigation Streamlit ; 4 tests PostgreSQL sur la branche isolée
+(persistance, transaction atomique, groupes séparés, droits limités).
+Les essais fictifs de vérification restent sur cette branche, pas sur main.
+Recette navigateur réalisée à 1440, 768, 390 et 320 pixels : navigation,
+graphiques, Bayes, carte de contrôle, Monte-Carlo, saisie, import CSV,
+refus des doublons et téléchargements PDF/CSV. Aucun débordement horizontal
+du contenu principal ni chevauchement légende/titre d'axe n'a été détecté.
+Les tableaux larges conservent leur défilement interne sur téléphone.
+Rapport PDF d'une page rendu et inspecté visuellement ; CSV téléchargés
+vérifiés (24 essais, 20000 tirages et marges R-S cohérentes).
+Les captures/tests ne sont pas livrés dans ce dossier.
+
+Restent à faire par le propriétaire : publication GitHub, déploiement Cloud,
+configuration des secrets du serveur et vérification dans ce nouvel
+environnement. Pas d'historique des versions d'essais, correction/suppression,
+gestion d'utilisateurs, sauvegarde applicative, calcul normatif d'acceptation,
+modèle mécanique d'élément porteur ou estimation de corrélations entre essais.
+
+Références officielles :
+- https://www.itl.nist.gov/div898/handbook/pmc/section3/pmc322.htm
+- https://www.itl.nist.gov/div898/handbook/prc/section2/prc212.htm
+- https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.goodness_of_fit.html
+- https://www.psycopg.org/psycopg3/docs/basic/usage.html
+- https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/app-dependencies
+- https://neon.com/docs
